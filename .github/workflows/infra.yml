@@ -87,10 +87,10 @@ jobs:
               anthropicApiKey='${{ secrets.ANTHROPIC_API_KEY }}' \
               bootstrapAdminEmail='${{ secrets.BOOTSTRAP_ADMIN_EMAIL }}'
 
-      - name: Show the deployed URL
+      - name: Show what got deployed
         run: |
           az deployment group show \
             --resource-group token_scope \
             --name main \
-            --query "{url:properties.outputs.containerAppUrl.value, acr:properties.outputs.acrLoginServer.value}" \
-            -o json
+            --query "{url:properties.outputs.containerAppUrl.value, containerApp:properties.outputs.containerAppName.value, acr:properties.outputs.acrLoginServer.value, keyVault:properties.outputs.keyVaultName.value, postgres:properties.outputs.postgresqlServerName.value, redis:properties.outputs.redisHostName.value}" \
+            -o json | tee -a "$GITHUB_STEP_SUMMARY"
