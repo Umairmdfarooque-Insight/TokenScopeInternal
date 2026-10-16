@@ -394,9 +394,15 @@ names back from the "Infra deploy" workflow's last run summary.)
 - **"Deploy image" fails because the container app doesn't exist:** run
   "Infra deploy (internal)" first — it creates the registry and app that
   "Deploy image" needs.
-- **GitHub Actions can't sign in to Azure ("AADSTS70021" or similar):**
-  the federated credential's trusted branch/condition doesn't match how
-  the workflow ran. Both workflows here run from `main` (push or manual
-  dispatch from `main`), matching the `github-main-branch` federated
-  credential already configured — if you add new branches/environments
-  that need to deploy, add a matching federated credential first.
+- **GitHub Actions can't sign in to Azure ("AADSTS70021"/"AADSTS700213"
+  or similar):** the federated credential's trusted subject doesn't match
+  what GitHub actually sent. Hit this once already (2026-10-16): this
+  GitHub org's tokens include the numeric owner/repo IDs in the subject —
+  `repo:Umairmdfarooque-Insight@290461511/TokenScopeInternal@1422010633:ref:refs/heads/main`
+  — not the plain `repo:org/repo:ref:...` form most Azure/GitHub OIDC docs
+  show. Both federated credentials on the CD app (`github-main-branch`,
+  `github-pull-request`) have already been updated to the `@id` form, so
+  this is only relevant again if you add a new branch/environment/app and
+  reuse the plain form by habit — check the exact subject GitHub sent (in
+  the failed run's `Azure login` step annotation/log) against what the
+  federated credential expects, rather than assuming the plain form.
