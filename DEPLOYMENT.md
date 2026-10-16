@@ -39,6 +39,7 @@ Written: 2026-10-16, by Claude Code, for umair.mdfarooque@insight.com.
 | 6 | Added `infra/parameters/internal.bicepparam` — the settings file describing *this* deployment (region East US, the `token_scope` resource group's posture). | Needed so the infrastructure script (`infra/main.bicep`) knows what to build for this specific environment. I set the posture to match the project's own "sandbox" example (public networking, no Front Door) — see Section 2.1 for why. |
 | 7 | Added `.github/workflows/infra.yml` — builds/updates all Azure resources (database, container app, key vault, etc.) from the Bicep files, run by hand from GitHub's Actions tab. | Kept **manual** on purpose: infrastructure changes (capacity, networking, enabling Front Door) are riskier than a routine app update, so they shouldn't fire automatically on every commit. |
 | 8 | Added `.github/workflows/deploy.yml` — builds the app's Docker image and rolls it out, automatically on every push to `main`, with an automatic health check and rollback if it fails. | This is the actual "CI/CD" you asked for: every change you push gets built and deployed automatically, and a bad deploy reverts itself. |
+| 9 | Created a second Azure AD app registration, `TokenScope-SignIn`, separate from the CD app, for the app's own Entra sign-in (Section 5.1). Set it up as a Web app, no API permissions added. | You asked for this one specifically. Kept it fully separate from the GitHub Actions CD app — one identity authenticates infrastructure deploys, the other identity is what your colleagues sign into the app *with*; mixing those would be a confusing blast-radius overlap for no benefit. Skipped the optional `User.Read.All` application permission (directory auto-placement) at your request — it needs tenant-wide admin consent, so it's a separate decision for later, not bundled into getting sign-in working. |
 
 ### 2.1 Why I chose a "sandbox-sized" setup, not full production
 
@@ -205,20 +206,45 @@ the CI/CD you asked for. No further manual steps for routine code changes.
 ### 5.1 Real company sign-in (Microsoft Entra ID)
 
 Right now anyone who opens the app sees a demo "pick a persona" login
-screen instead of a real Microsoft sign-in. To switch to real sign-in:
+screen instead of a real Microsoft sign-in.
 
-1. In Azure AD, register a new app for TokenScope itself (separate from
-   the GitHub Actions one) with a redirect URI of
-   `https://<the-url-from-step-2-above>/auth/entra/callback`.
-2. Add its tenant ID, client ID, and client secret as the
-   `ENTRA_TENANT_ID` / `ENTRA_CLIENT_ID` / `ENTRA_CLIENT_SECRET` GitHub
-   secrets (Section 3.2's table).
-3. Set `BOOTSTRAP_ADMIN_EMAIL` to the email of whoever should become the
+**Already done:** a separate app registration for sign-in,
+`TokenScope-SignIn` (distinct from the GitHub Actions CD app) —
+
+| | |
+|---|---|
+| Client (app) ID | `b4f1651c-4956-4ab5-ae2b-de3290fbf260` |
+| Object ID | `f6419837-4e21-4685-befe-e91dbf83954b` |
+| Service principal (Enterprise App) object ID | `814a290d-9659-499c-a92d-2117d5be850c` |
+| Platform | Web (redirect URI left empty — set in step 1 below) |
+| API permissions | None added. The sign-in scopes TokenScope uses —
+  `openid`, `profile`, `email`, `offline_access` — are standard OIDC
+  scopes that need no entry under "API permissions" and no admin
+  consent. (We deliberately skipped adding the optional
+  `User.Read.All` **application** permission that powers automatic
+  directory-based placement — see `docs/CONFIGURATION.md`
+  `NUXT_GRAPH_DIRECTORY_MODE`. Add it later, from the Entra portal, only
+  if you want that feature; it needs a Global/Privileged-role admin to
+  click "Grant admin consent".) |
+
+**Still to do, in order:**
+
+1. Once `infra.yml` has run successfully at least once and you have the
+   container app's URL (Section 4, step 2's job summary), go to
+   **Entra ID → App registrations → TokenScope-SignIn → Authentication**
+   and add the redirect URI: `https://<that-url>/auth/entra/callback`.
+2. On the same app, go to **Certificates & secrets → New client secret**,
+   create one, and copy its **value** immediately (it's only shown once).
+3. Add to GitHub (Section 3.2's table):
+   - `ENTRA_TENANT_ID` = `6c637512-c417-4e78-9d62-b61258e4b619`
+   - `ENTRA_CLIENT_ID` = `b4f1651c-4956-4ab5-ae2b-de3290fbf260`
+   - `ENTRA_CLIENT_SECRET` = the value from step 2
+4. Set `BOOTSTRAP_ADMIN_EMAIL` to the email of whoever should become the
    first admin.
-4. In `infra/parameters/internal.bicepparam`, set `param
+5. In `infra/parameters/internal.bicepparam`, set `param
    allowPersonaOverride = false` (turns off the demo login for good) and
    commit that change.
-5. Re-run the **"Infra deploy (internal)"** workflow.
+6. Re-run the **"Infra deploy (internal)"** workflow.
 
 ### 5.2 Real usage/billing data (Anthropic, GitHub Copilot)
 
