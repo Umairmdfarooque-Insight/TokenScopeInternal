@@ -1,0 +1,96 @@
+# TokenScope — Infra deploy (Insight internal environment)
+#
+# Applies infra/main.bicep (infra/parameters/internal.bicepparam) to the
+# `token_scope` resource group. This is the ONLY supported way to change
+# infrastructure (Postgres, Redis, Key Vault, Container App env wiring,
+# networking, Front Door) for this environment — do not `az deployment
+# group create` by hand against it, or this workflow's next run will
+# silently overwrite manual changes.
+#
+# Manually triggered on purpose: infra changes (capacity, networking,
+# Front Door posture) are higher-risk than an image roll (deploy.yml) and
+# should be a deliberate action, not something that fires on every push.
+#
+# Auth: Azure AD app "TokenScopeInternal-GitHubActions-CD", via OIDC
+# federated credential (no stored client secret) — see DEPLOYMENT.md.
+#
+# Secrets required (repo Settings → Secrets and variables → Actions):
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID  (the CD app's identity)
+#   PG_ADMIN_LOGIN, PG_ADMIN_PASSWORD                        (Postgres admin)
+#   SESSION_SECRET, HMAC_SESSION_KEY, INTERNAL_WORKER_HMAC_KEY
+#   ENTRA_TENANT_ID, ENTRA_CLIENT_ID, ENTRA_CLIENT_SECRET    (optional — real sign-in)
+#   ANTHROPIC_API_KEY                                        (optional — usage reconciliation)
+#   BOOTSTRAP_ADMIN_EMAIL                                    (optional — first real admin)
+# Any optional secret left unset passes through as an empty string, which
+# the app treats as "not configured yet" (see docs/CONFIGURATION.md).
+
+name: Infra deploy (internal)
+
+on:
+  workflow_dispatch:
+    inputs:
+      imageTag:
+        description: 'Container image tag to deploy (leave as latest for first apply, before deploy.yml has ever run)'
+        required: false
+        default: 'latest'
+      enableFrontDoor:
+        description: 'Enable Azure Front Door + WAF in front of the container app (3-phase apply — see docs/DEPLOY-AZURE.md)'
+        type: boolean
+        required: false
+        default: false
+      frontDoorId:
+        description: 'Front Door instance id (phase 3 only — leave empty on first two applies)'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write   # required for OIDC login to Azure
+  contents: read
+
+concurrency:
+  group: infra-internal
+  cancel-in-progress: false   # never cancel a half-applied infra deployment
+
+jobs:
+  deploy-infra:
+    name: Deploy Bicep to token_scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Azure login (OIDC)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: az deployment group create
+        run: |
+          az deployment group create \
+            --resource-group token_scope \
+            --template-file infra/main.bicep \
+            --parameters infra/parameters/internal.bicepparam \
+            --parameters \
+              imageTag='${{ inputs.imageTag }}' \
+              enableFrontDoor=${{ inputs.enableFrontDoor }} \
+              frontDoorId='${{ inputs.frontDoorId }}' \
+              pgAdminLogin='${{ secrets.PG_ADMIN_LOGIN }}' \
+              pgAdminPassword='${{ secrets.PG_ADMIN_PASSWORD }}' \
+              sessionSecret='${{ secrets.SESSION_SECRET }}' \
+              hmacSessionKey='${{ secrets.HMAC_SESSION_KEY }}' \
+              internalWorkerHmacKey='${{ secrets.INTERNAL_WORKER_HMAC_KEY }}' \
+              entraIdTenantId='${{ secrets.ENTRA_TENANT_ID }}' \
+              entraIdClientId='${{ secrets.ENTRA_CLIENT_ID }}' \
+              entraIdClientSecret='${{ secrets.ENTRA_CLIENT_SECRET }}' \
+              anthropicApiKey='${{ secrets.ANTHROPIC_API_KEY }}' \
+              bootstrapAdminEmail='${{ secrets.BOOTSTRAP_ADMIN_EMAIL }}'
+
+      - name: Show the deployed URL
+        run: |
+          az deployment group show \
+            --resource-group token_scope \
+            --name main \
+            --query "{url:properties.outputs.containerAppUrl.value, acr:properties.outputs.acrLoginServer.value}" \
+            -o json

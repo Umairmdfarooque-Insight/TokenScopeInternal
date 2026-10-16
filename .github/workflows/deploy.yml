@@ -1,0 +1,118 @@
+# TokenScope — Image build + roll (Insight internal environment)
+#
+# Builds the Docker image (server-side, inside ACR — no local Docker
+# needed), rolls the container app to it, verifies /api/health, and rolls
+# back automatically if health doesn't come back green. Mirrors
+# scripts/deploy-image.sh exactly, as GitHub Actions CD.
+#
+# SCOPE: image roll only. It does NOT change infrastructure (env vars,
+# scaling, networking, secrets) — that is infra.yml's job. Run infra.yml
+# at least once before this workflow can succeed (the container app and
+# ACR must already exist).
+#
+# Auth: same Azure AD app + OIDC federated credential as infra.yml.
+
+name: Deploy image (internal)
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'infra/**'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to build/deploy (leave empty to use the current commit SHA)'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write   # required for OIDC login to Azure
+  contents: read
+
+concurrency:
+  group: deploy-internal
+  cancel-in-progress: false   # never cancel a half-rolled-out deploy
+
+env:
+  RG: token_scope
+  ACR: crtokenscopesandboxeastus       # must match infra/parameters/internal.bicepparam (env/location/projectName)
+  APP: ca-tokenscope-sandbox-eastus    # same naming convention, see infra/main.bicep "Naming Convention"
+  IMG: tokenscope
+
+jobs:
+  build-and-deploy:
+    name: Build, push, roll, verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="$(git rev-parse --short HEAD)"; fi
+          if ! printf '%s' "$TAG" | grep -Eq '^[a-zA-Z0-9._-]+$'; then
+            echo "::error:: invalid tag '$TAG'"; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Capture current healthy revision (for rollback)
+        id: prev
+        run: |
+          PREV="$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "properties.latestReadyRevisionName" -o tsv 2>/dev/null || echo "")"
+          echo "revision=$PREV" >> "$GITHUB_OUTPUT"
+          echo "Previous healthy revision: ${PREV:-none (first deploy)}"
+
+      - name: Build + push inside ACR
+        run: |
+          az acr build --registry "$ACR" \
+            --image "${IMG}:${{ steps.tag.outputs.tag }}" \
+            --image "${IMG}:latest" \
+            --file Dockerfile .
+
+      - name: Roll the container app
+        run: |
+          az containerapp update --name "$APP" --resource-group "$RG" \
+            --image "${ACR}.azurecr.io/${IMG}:${{ steps.tag.outputs.tag }}"
+
+      - name: Verify health, rolling back on failure
+        run: |
+          FQDN="$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)"
+          echo "Checking https://${FQDN}/api/health ..."
+          ok=0
+          for i in 1 2 3 4 5; do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://${FQDN}/api/health" || true)"
+            if [ "$code" = "200" ]; then echo "✓ health 200 (attempt $i)"; ok=1; break; fi
+            echo "  attempt $i: HTTP $code — retrying in 30s..."; sleep 30
+          done
+
+          if [ "$ok" != "1" ]; then
+            echo "::error:: health check failed after 5 attempts"
+            PREV="${{ steps.prev.outputs.revision }}"
+            if [ -n "$PREV" ]; then
+              echo "Rolling back to $PREV ..."
+              CUR="$(az containerapp show --name "$APP" --resource-group "$RG" \
+                --query "properties.latestRevisionName" -o tsv 2>/dev/null || echo "")"
+              if [ -n "$CUR" ] && [ "$CUR" != "$PREV" ]; then
+                az containerapp revision deactivate --name "$APP" --resource-group "$RG" --revision "$CUR" || true
+              fi
+              az containerapp revision activate --name "$APP" --resource-group "$RG" --revision "$PREV" || true
+              echo "Rollback complete — previous revision reactivated"
+            fi
+            exit 1
+          fi
+
+          echo "✅ deployed: https://${FQDN} (${IMG}:${{ steps.tag.outputs.tag }})"
