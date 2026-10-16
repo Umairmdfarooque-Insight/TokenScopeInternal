@@ -1,7 +1,9 @@
 // ── TokenScope — Internal (Insight) environment parameters ──────────────
 //
 // Deploys into the existing resource group `token_scope`
-// (subscription 4b9be414-9438-4356-b1d7-a649d4a0d809, region East US).
+// (subscription 4b9be414-9438-4356-b1d7-a649d4a0d809). The resource
+// group itself lives in East US, but its *resources* are placed in West
+// US 3 instead — see the `location` param below for why.
 //
 // Posture: public networking, Front Door off — same shape as the
 // documented "sandbox" example, chosen deliberately for first bring-up
@@ -18,7 +20,18 @@
 using '../main.bicep'
 
 param env = 'sandbox'
-param location = 'eastus'          // matches the existing token_scope resource group
+// NOT 'eastus': this subscription is Azure-policy-restricted from
+// provisioning PostgreSQL Flexible Server in eastus, eastus2, westus2,
+// southcentralus and westeurope ("Provisioning is restricted in this
+// region" / "ParameterOutOfRange: Version should be in: []" is what that
+// looks like when Bicep hits it). westus3 is confirmed open for this
+// subscription (verified with `az postgres flexible-server list-skus
+// --location westus3`) and is also a first-class region in
+// `main.bicep`'s naming map, so resource names come out clean
+// (ca-tokenscope-sandbox-wus3, not a raw region string). A resource
+// group's own region does not have to match where its resources live,
+// so this does not require moving `token_scope` itself.
+param location = 'westus3'
 param projectName = 'tokenscope'
 param imageTag = 'latest'          // deploy.yml overrides this per roll
 

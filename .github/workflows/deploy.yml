@@ -38,8 +38,8 @@ concurrency:
 
 env:
   RG: token_scope
-  ACR: crtokenscopesandboxeastus       # must match infra/parameters/internal.bicepparam (env/location/projectName)
-  APP: ca-tokenscope-sandbox-eastus    # same naming convention, see infra/main.bicep "Naming Convention"
+  ACR: crtokenscopesandboxwus3       # must match infra/parameters/internal.bicepparam (env/location/projectName)
+  APP: ca-tokenscope-sandbox-wus3    # same naming convention, see infra/main.bicep "Naming Convention"
   IMG: tokenscope
 
 jobs:

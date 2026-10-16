@@ -13,7 +13,10 @@ Written: 2026-10-16, by Claude Code, for umair.mdfarooque@insight.com.
 
 - **Where it's hosted:** Azure resource group `token_scope`, subscription
   `4b9be414-9438-4356-b1d7-a649d4a0d809` ("Visual Studio Enterprise
-  Subscription"), region **East US**.
+  Subscription"). The resource group itself is in East US, but its
+  *resources* are deployed in **West US 3** — this subscription is
+  policy-restricted from creating PostgreSQL Flexible Server in East US
+  (and several other regions); see decision #11 below.
 - **Where the code lives:** `https://github.com/Umairmdfarooque-Insight/TokenScopeInternal`,
   pushed from this machine's local copy of the TokenScope source
   (`tokenscope-public`), full history.
@@ -41,6 +44,7 @@ Written: 2026-10-16, by Claude Code, for umair.mdfarooque@insight.com.
 | 8 | Added `.github/workflows/deploy.yml` — builds the app's Docker image and rolls it out, automatically on every push to `main`, with an automatic health check and rollback if it fails. | This is the actual "CI/CD" you asked for: every change you push gets built and deployed automatically, and a bad deploy reverts itself. |
 | 9 | Created a second Azure AD app registration, `TokenScope-SignIn`, separate from the CD app, for the app's own Entra sign-in (Section 5.1). Set it up as a Web app, no API permissions added. | You asked for this one specifically. Kept it fully separate from the GitHub Actions CD app — one identity authenticates infrastructure deploys, the other identity is what your colleagues sign into the app *with*; mixing those would be a confusing blast-radius overlap for no benefit. Skipped the optional `User.Read.All` application permission (directory auto-placement) at your request — it needs tenant-wide admin consent, so it's a separate decision for later, not bundled into getting sign-in working. |
 | 10 | **Corrected course** after you tried granting `$DEPLOY_APP_ID` "User Access Administrator" and Azure refused it (`AuthorizationFailed` — ABAC condition). Removed that instruction; confirmed `infra/main.bicep`'s `deployRbac` defaults to `false` specifically so a Contributor-only deploy identity works; added Section 4 step 2a's narrow, resource-scoped role grants as the real fix. | That earlier instruction was my mistake — I hadn't checked that the project already had a designed-in answer for this exact situation before asking you to grant a broader role than necessary (one Azure's own guardrails correctly refused, since it would let the CD identity grant itself anything). The 5 roles in step 2a carry no further role-granting power, so your "RBAC Administrator" role can assign them without hitting the same wall. |
+| 11 | Changed `infra/parameters/internal.bicepparam`'s `location` from `eastus` to `westus3`, and updated `deploy.yml`'s hardcoded ACR/app names to match (`crtokenscopesandboxwus3`, `ca-tokenscope-sandbox-wus3`). | The first real infra deploy failed with `ParameterOutOfRange: Version should be in: []` on the PostgreSQL resource — misleading wording for "this subscription is policy-restricted from provisioning PostgreSQL Flexible Server in this region at all." Checked with `az postgres flexible-server list-skus --location <region>` across several regions: eastus, eastus2, westus2, southcentralus and westeurope are all restricted for this subscription; `westus3`, `centralus` and `northeurope` are open. Picked `westus3` because it's already a first-class region in `main.bicep`'s naming map (clean resource names) and is where the project's own public sandbox demo already runs, so it's a known-good region for this exact app. A resource group's region is just metadata — its resources can live in a different region, so `token_scope` itself did not need to move. |
 
 ### 2.1 Why I chose a "sandbox-sized" setup, not full production
 
@@ -208,7 +212,7 @@ Once Section 3's steps are done, bring the app online in this order:
 
    ```bash
    RG="token_scope"
-   NAME="tokenscope-sandbox-eastus"   # matches infra/parameters/internal.bicepparam
+   NAME="tokenscope-sandbox-wus3"   # matches infra/parameters/internal.bicepparam
 
    MI_PRINCIPAL_ID="$(az identity show --name "id-$NAME" --resource-group "$RG" --query principalId -o tsv)"
    ACR_ID="$(az acr show --name "cr${NAME//-/}" --resource-group "$RG" --query id -o tsv)"
@@ -336,12 +340,12 @@ environment.** For `token_scope`, run the equivalent by hand instead:
 
 ```bash
 TAG="$(git rev-parse --short HEAD)"
-az acr build --registry crtokenscopesandboxeastus \
+az acr build --registry crtokenscopesandboxwus3 \
   --image tokenscope:$TAG --image tokenscope:latest \
   --file Dockerfile .
-az containerapp update --name ca-tokenscope-sandbox-eastus \
+az containerapp update --name ca-tokenscope-sandbox-wus3 \
   --resource-group token_scope \
-  --image crtokenscopesandboxeastus.azurecr.io/tokenscope:$TAG
+  --image crtokenscopesandboxwus3.azurecr.io/tokenscope:$TAG
 ```
 
 (If you ever rename the environment, region, or project in
@@ -357,12 +361,12 @@ names back from the "Infra deploy" workflow's last run summary.)
 |---|---|
 | Subscription | `4b9be414-9438-4356-b1d7-a649d4a0d809` |
 | Tenant | `6c637512-c417-4e78-9d62-b61258e4b619` (insight.com) |
-| Resource group | `token_scope` (East US) |
+| Resource group | `token_scope` (East US; resources deployed in **West US 3** — see decision #11) |
 | GitHub repo | `Umairmdfarooque-Insight/TokenScopeInternal` |
 | CI/CD Azure AD app | `TokenScopeInternal-GitHubActions-CD`, client ID `c92c3a6c-f05b-4825-980b-27b5d1c3d165` |
-| Container app (after first deploy) | `ca-tokenscope-sandbox-eastus` |
-| Container registry | `crtokenscopesandboxeastus.azurecr.io` |
-| Key Vault | `kv-tokenscope-sandbox-eastus` |
+| Container app (after first deploy) | `ca-tokenscope-sandbox-wus3` |
+| Container registry | `crtokenscopesandboxwus3.azurecr.io` |
+| Key Vault | `kv-tokenscope-sandbox-wus3` |
 | Infra settings file | `infra/parameters/internal.bicepparam` |
 | CI/CD workflows | `.github/workflows/infra.yml`, `.github/workflows/deploy.yml` |
 | Full variable reference | `docs/CONFIGURATION.md` |
@@ -406,3 +410,32 @@ names back from the "Infra deploy" workflow's last run summary.)
   reuse the plain form by habit — check the exact subject GitHub sent (in
   the failed run's `Azure login` step annotation/log) against what the
   federated credential expects, rather than assuming the plain form.
+- **"Infra deploy" fails on the PostgreSQL resource with
+  `ParameterOutOfRange: The value of the 'Version' should be in: []`:**
+  misleading wording — it actually means this subscription is
+  policy-restricted from provisioning PostgreSQL Flexible Server in the
+  chosen region at all (confirm with `az postgres flexible-server
+  list-skus --location <region>` — look for `"reason": "...restricted
+  from provisioning in this region..."`). Hit this once already
+  (2026-10-16) on `eastus`; `eastus2`, `westus2`, `southcentralus` and
+  `westeurope` are also restricted for this subscription, while
+  `westus3`, `centralus` and `northeurope` are open. Fixed by moving
+  `location` in `internal.bicepparam` to `westus3` (decision #11) — the
+  resource group's own region doesn't need to match. If you ever need a
+  different region, check it with that command *before* changing
+  `location`, not after a failed deploy.
+- **Leftover `-eastus` resources after moving to `westus3`:** the first
+  attempt (before decision #11) got far enough to create ~13 resources in
+  `eastus` before the PostgreSQL step failed (identity, Redis, Log
+  Analytics, Application Insights, alerts, Key Vault, Container Registry
+  — everything *except* Postgres succeeded). Moving `location` to
+  `westus3` makes the next "Infra deploy" create a **parallel** set of
+  `-wus3` resources rather than fixing these in place, since the
+  resource names bake the region in. Once the `westus3` deploy is
+  confirmed working, delete the `eastus` leftovers by hand (they cost
+  money sitting idle — Redis and Log Analytics in particular) — list them
+  with `az resource list --resource-group token_scope --query
+  "[?location=='eastus'].{name:name, type:type}" -o table` and remove
+  each with `az resource delete --ids <id>`, or delete them from the
+  Azure Portal. Do **not** delete the whole `token_scope` resource group —
+  only the `-eastus`-suffixed resources inside it.
