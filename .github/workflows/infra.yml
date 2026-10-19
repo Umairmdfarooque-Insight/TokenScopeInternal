@@ -42,6 +42,10 @@ on:
         description: 'Front Door instance id (phase 3 only — leave empty on first two applies)'
         required: false
         default: ''
+      location:
+        description: 'Azure region for all resources (use a region where this subscription can create PostgreSQL Flexible Server)'
+        required: false
+        default: 'eastus'
 
 permissions:
   id-token: write   # required for OIDC login to Azure
@@ -66,13 +70,29 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Check PostgreSQL region availability
+        env:
+          AZURE_LOCATION: ${{ inputs.location }}
+        run: |
+          sku_count=$(az postgres flexible-server list-skus \
+            --location "$AZURE_LOCATION" \
+            --query 'length(@)' \
+            --output tsv)
+          if ! [[ "$sku_count" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::No PostgreSQL Flexible Server SKUs are available in '$AZURE_LOCATION' for this subscription. Choose another region with the workflow's location input, or request Azure access to provision PostgreSQL in this region."
+            exit 1
+          fi
+
       - name: az deployment group create
+        env:
+          AZURE_LOCATION: ${{ inputs.location }}
         run: |
           az deployment group create \
             --resource-group token_scope \
             --template-file infra/main.bicep \
             --parameters infra/parameters/internal.bicepparam \
             --parameters \
+              location="$AZURE_LOCATION" \
               imageTag='${{ inputs.imageTag }}' \
               enableFrontDoor=${{ inputs.enableFrontDoor }} \
               frontDoorId='${{ inputs.frontDoorId }}' \

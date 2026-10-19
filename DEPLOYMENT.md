@@ -391,6 +391,16 @@ names back from the "Infra deploy" workflow's last run summary.)
   create` with the previous parameter values.
 - **"Infra deploy" fails with `AuthorizationFailed`:** Section 3.1's role
   assignments haven't been done yet, or were done at the wrong scope.
+- **"Infra deploy" reports no PostgreSQL Flexible Server SKUs in a region, or
+  PostgreSQL creation fails with `ParameterOutOfRange` and `Version` allowed
+  values `[]`:** the subscription is not allowed to provision PostgreSQL
+  Flexible Server in that region. Check available regions with
+  `az postgres flexible-server list-skus --location <region>`, then rerun
+  "Infra deploy (internal)" with its `location` input set to an available
+  region. That input applies to all resources. If the deployment must remain
+  in the current region, request PostgreSQL Flexible Server access for the
+  subscription through Azure Help + support; changing the PostgreSQL version
+  in Bicep does not fix this regional restriction.
 - **A role assignment fails with `AuthorizationFailed ... has an
   authorization with ABAC condition that is not fulfilled`:** you (or
   someone) tried to grant a role that itself can create more role
