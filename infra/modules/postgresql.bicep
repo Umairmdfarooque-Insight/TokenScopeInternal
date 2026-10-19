@@ -201,9 +201,14 @@ resource slowStatementLog 'Microsoft.DBforPostgreSQL/flexibleServers/configurati
     source: 'user-override'
   }
   // Chained after the (possibly condition-false, then no-op) Query Store
-  // pair: same-server configuration writes can conflict when concurrent, so
-  // the whole set deploys serially on every tier.
-  dependsOn: [queryStorePlans]
+  // pair AND after statStatementsUtility directly: same-server
+  // configuration writes can conflict when concurrent, and on Burstable
+  // tier queryStorePlans doesn't exist, so depending on it alone leaves
+  // this resource with no real predecessor — it would then race
+  // statStatementsTrack/statStatementsUtility and intermittently fail
+  // with ServerIsBusy (hit in practice on a B2s sandbox deploy). Listing
+  // statStatementsUtility too guarantees a live dependency on every tier.
+  dependsOn: [queryStorePlans, statStatementsUtility]
 }
 
 // ── shared_preload_libraries — pg_stat_statements ────────────────────────────
